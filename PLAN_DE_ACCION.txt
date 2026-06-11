@@ -1,0 +1,719 @@
+================================================================================
+  PLAN DE ACCION — EXAM MANAGER (plataforma multi-institución)
+  Fecha: 2026-06-10
+  Versión: 3.0  (arquitectura hexagonal + microservicios selectivos)
+================================================================================
+
+VISION ACTUALIZADA
+------------------
+Transformar la API en una plataforma educativa genérica con:
+- Soporte multi-institución (desacoplado de UADE)
+- Múltiples instancias de examen con historial
+- Banco de preguntas y generación aleatoria
+- Corrección asistida por IA (Spring AI)
+- Métricas académicas completas
+- Arquitectura hexagonal (ports & adapters) en el núcleo
+- Servicios con responsabilidades claras, algunos independizables como microservicios
+
+================================================================================
+SECCIÓN A — DECISIONES DE ARQUITECTURA
+================================================================================
+
+A.1 — POR QUÉ HEXAGONAL Y NO SOLO CAPAS
+-----------------------------------------
+La arquitectura actual (Controller → Service → Repository) es frágil para
+escalar: la lógica de negocio está acoplada a JPA, Spring, y los detalles
+HTTP. La arquitectura hexagonal (ports & adapters) separa:
+
+  DOMINIO (núcleo):
+    - Entidades de negocio puras (sin anotaciones JPA)
+    - Casos de uso / servicios de dominio
+    - Puertos de entrada (lo que el mundo exterior puede pedirle al dominio)
+    - Puertos de salida (lo que el dominio necesita del mundo exterior)
+
+  ADAPTADORES DE ENTRADA (driving):
+    - REST Controllers (HTTP → caso de uso)
+    - Importación CSV/JSON
+
+  ADAPTADORES DE SALIDA (driven):
+    - Repositorios JPA (caso de uso → base de datos)
+    - Clientes Spring AI (caso de uso → LLM)
+    - Generador PDF (caso de uso → archivo binario)
+    - Mailer (caso de uso → SMTP, futuro)
+
+  Beneficio concreto: si mañana cambiás de H2 a PostgreSQL, de OpenAI a
+  Ollama, o de REST a gRPC, solo tocás el adaptador. El dominio no se mueve.
+
+A.2 — QUÉ QUEDA COMO MONOLITO MODULAR Y QUÉ SALE COMO MICROSERVICIO
+---------------------------------------------------------------------
+
+  MÓDULO / SERVICIO              DEPLOYMENT            JUSTIFICACIÓN
+  ----------------------------   -------------------   --------------------------------
+  exam-core                      Monolito modular      CRUD fuertemente acoplado entre
+  (students, groups, exams,      (módulo Maven)        entidades, compartir transacción
+  topics, institutions, grades)                        es correcto aquí
+
+  pdf-service                    Microservicio         Stateless, sin BD propia,
+                                 independiente         resource-intensive (CPU/mem),
+                                                       se puede escalar y reemplazar
+                                                       sin tocar el core
+
+  question-bank-service          Microservicio         Dominio independiente, puede
+                                 independiente         ser compartido por otras apps
+                                                       o instituciones distintas
+
+  ai-correction-service          Microservicio         Llama a APIs externas costosas,
+                                 independiente         necesita su propio rate-limit,
+                                                       fallback, y SLA distinto
+
+  analytics-service              Microservicio         Read-heavy, event-driven,
+                                 (consumidor de        sus datos se pueden recalcular
+                                  eventos)             desde el core. No escribe en
+                                                       el core.
+
+  Patrón de comunicación:
+  - exam-core → pdf-service:          REST síncrono (pide PDF, espera bytes)
+  - exam-core → ai-correction:        REST asíncrono + polling, o eventos
+  - exam-core → question-bank:        REST síncrono (pide preguntas)
+  - exam-core → analytics-service:    Eventos de dominio (publica, no espera)
+  - Todos → API Gateway:              Un solo punto de entrada para el frontend
+
+A.3 — ESTRUCTURA DE MÓDULOS MAVEN (multi-module)
+--------------------------------------------------
+  exam-manager/                        ← parent pom
+  ├── exam-core/                       ← monolito modular hexagonal
+  │   ├── domain/                      ← entidades puras, puertos, casos de uso
+  │   ├── application/                 ← orquestación de casos de uso
+  │   └── infrastructure/              ← adaptadores JPA, REST, CSV
+  ├── pdf-service/                     ← microservicio Spring Boot independiente
+  ├── question-bank-service/           ← microservicio Spring Boot independiente
+  ├── ai-correction-service/           ← microservicio Spring Boot independiente
+  ├── analytics-service/               ← microservicio Spring Boot independiente
+  └── api-gateway/                     ← Spring Cloud Gateway (opcional)
+
+A.4 — ESTRUCTURA HEXAGONAL DENTRO DE exam-core
+------------------------------------------------
+  exam-core/src/main/java/com/exammanager/
+  ├── domain/
+  │   ├── model/                       ← POJOs puros (sin @Entity)
+  │   │   ├── Student.java
+  │   │   ├── Exam.java
+  │   │   ├── ExamGroup.java
+  │   │   └── ...
+  │   ├── port/
+  │   │   ├── in/                      ← puertos de entrada (interfaces de casos de uso)
+  │   │   │   ├── CreateExamUseCase.java
+  │   │   │   ├── GenerateGroupsUseCase.java
+  │   │   │   ├── RegisterGradeUseCase.java
+  │   │   │   └── ...
+  │   │   └── out/                     ← puertos de salida (lo que el dominio necesita)
+  │   │       ├── ExamRepository.java  ← interfaz, no implementación
+  │   │       ├── StudentRepository.java
+  │   │       ├── PdfGeneratorPort.java
+  │   │       ├── QuestionBankPort.java
+  │   │       └── ...
+  │   └── service/                     ← servicios de dominio (implementan puertos in)
+  │       ├── ExamDomainService.java
+  │       ├── GroupingDomainService.java
+  │       └── GradingDomainService.java
+  ├── application/
+  │   └── usecase/                     ← orquestadores (usan puertos in/out)
+  │       ├── CreateExamUseCaseImpl.java
+  │       ├── GenerateGroupsUseCaseImpl.java
+  │       └── ...
+  └── infrastructure/
+      ├── adapter/
+      │   ├── in/
+      │   │   ├── rest/                ← Controllers Spring MVC
+      │   │   └── csv/                 ← Importadores CSV/JSON
+      │   └── out/
+      │       ├── jpa/                 ← Entidades JPA + repositorios Spring Data
+      │       │   ├── entity/          ← JPA @Entity (distintas de domain/model)
+      │       │   └── repository/      ← Spring Data Repositories
+      │       ├── pdf/                 ← Cliente REST que llama a pdf-service
+      │       └── questionbank/        ← Cliente REST que llama a question-bank-service
+      └── config/                      ← Spring config, beans, seguridad
+
+================================================================================
+SECCIÓN B — FASES DE IMPLEMENTACIÓN
+================================================================================
+
+================================================================================
+FASE 1 — REESTRUCTURACIÓN A ARQUITECTURA HEXAGONAL (exam-core)
+Estimación: 3-4 sesiones | Prerequisito para todo lo demás
+================================================================================
+
+ITEM 1.1 — Convertir a proyecto Maven multi-módulo
+----------------------------------------------------
+  - Crear parent pom.xml con módulos: exam-core, pdf-service, question-bank-service,
+    ai-correction-service, analytics-service
+  - Mover código actual a exam-core/
+  - Verificar que todo sigue compilando y funcionando
+
+ITEM 1.2 — Crear capa domain/ con modelos puros
+------------------------------------------------
+  Para cada entidad actual, crear su equivalente de dominio:
+  - domain/model/Student.java          ← POJO sin @Entity, sin Spring
+  - domain/model/Exam.java
+  - domain/model/ExamGroup.java
+  - domain/model/Topic.java
+  - domain/model/Institution.java      ← nuevo (Fase 2)
+  - domain/model/Grade.java            ← nuevo (Fase 3)
+
+  Regla: ninguna clase en domain/ puede importar Spring, JPA, Jackson, etc.
+
+ITEM 1.3 — Definir puertos de entrada (use cases)
+---------------------------------------------------
+  Interfaces en domain/port/in/:
+  - CreateStudentUseCase        { Student create(CreateStudentCommand cmd); }
+  - ImportStudentsUseCase       { List<Student> importFromText(String raw); }
+  - CreateExamUseCase           { Exam create(CreateExamCommand cmd); }
+  - GenerateGroupsUseCase       { List<ExamGroup> generateRandom(GenerateGroupsCommand cmd); }
+  - AssignTopicsUseCase         { void assign(AssignTopicsCommand cmd); }
+  - RegisterGradeUseCase        { Grade register(RegisterGradeCommand cmd); }
+  - ExportPdfUseCase            { byte[] export(Long groupId); }
+
+  Command = record inmutable con los datos necesarios para ejecutar el caso de uso
+
+ITEM 1.4 — Definir puertos de salida (dependencias del dominio)
+----------------------------------------------------------------
+  Interfaces en domain/port/out/:
+  - LoadStudentPort             { Optional<Student> load(Long id); }
+  - SaveStudentPort             { Student save(Student student); }
+  - LoadExamPort                { Optional<Exam> load(Long id); }
+  - SaveExamPort                { Exam save(Exam exam); }
+  - GeneratePdfPort             { byte[] generate(ExamGroup group, Exam exam); }
+  - LoadQuestionsPort           { List<Question> loadByTopic(Long topicId, int count); }
+  - PublishDomainEventPort      { void publish(DomainEvent event); }
+
+ITEM 1.5 — Mover lógica de negocio a domain/service/
+------------------------------------------------------
+  - GroupingDomainService:   lógica de distribución aleatoria/manual de grupos
+  - GradingDomainService:    cálculo de nota final, asignación de StudentStatus
+  - TopicAssignmentService:  lógica de asignación de temas (con/sin repetición)
+
+  Estos servicios reciben objetos de dominio y devuelven objetos de dominio.
+  No saben nada de HTTP ni de base de datos.
+
+ITEM 1.6 — Implementar adaptadores de salida JPA
+-------------------------------------------------
+  En infrastructure/adapter/out/jpa/:
+  - Mappers: domain/model ↔ @Entity JPA (MapStruct o manual)
+  - JpaStudentRepository implements SaveStudentPort, LoadStudentPort
+  - JpaExamRepository implements SaveExamPort, LoadExamPort
+  - etc.
+
+  Los @Entity JPA viven solo en infrastructure/, nunca en domain/.
+
+ITEM 1.7 — Adaptar Controllers existentes
+-------------------------------------------
+  - Los Controllers pasan a llamar puertos de entrada (use cases)
+  - Ya no llaman directamente a los Services actuales
+  - Se eliminan los @Service actuales (su lógica migró a domain/service/)
+
+================================================================================
+FASE 2 — MULTI-INSTITUCIÓN
+Estimación: 2-3 sesiones | Encima de la arquitectura hexagonal
+================================================================================
+
+ITEM 2.1 — Dominio Institution
+--------------------------------
+  - domain/model/Institution.java
+    Campos: id, name, shortName, faculty, logoPath, primaryColor,
+            examHeaderTemplate, academicIntegrityText, evaluationMethodology
+
+  - Puertos: LoadInstitutionPort, SaveInstitutionPort
+  - Use cases: CreateInstitutionUseCase, UpdateInstitutionLogoUseCase
+
+  - Adaptador REST: InstitutionController
+    GET/POST/PUT/DELETE /api/institutions
+    POST /api/institutions/{id}/logo
+
+ITEM 2.2 — Exam referencia Institution
+----------------------------------------
+  - domain/model/Exam.java  → agregar institutionId
+  - PDF generado usa logo, textos y colores de Institution
+
+ITEM 2.3 — PDF configurable por institución
+--------------------------------------------
+  - GeneratePdfPort recibe también Institution
+  - pdf-service (Fase 4) usa esos datos para armar el documento
+  - Textos hardcodeados de UADE reemplazados por los campos de Institution
+
+ITEM 2.4 — Migración de datos UADE
+-------------------------------------
+  - DataMigrationService crea Institution("UADE") al primer arranque
+  - Asigna esa institución al ExamConfig existente
+  - Corre una sola vez con un flag en tabla interna
+
+================================================================================
+FASE 3 — MÚLTIPLES EXÁMENES
+Estimación: 2-3 sesiones | Cambio de estado singleton a colección
+================================================================================
+
+ITEM 3.1 — Dominio Exam
+-------------------------
+  - domain/model/Exam.java con ExamStatus enum (DRAFT, ACTIVE, CLOSED)
+  - Campos migrados de ExamConfig: subjectName, teachers, examDate, pageCount,
+    allowTopicRepetition, topicsPerGroup, passingGrade, promotionGrade,
+    groupWeight, individualWeight
+
+  - Use cases:
+    CreateExamUseCase, ActivateExamUseCase, CloseExamUseCase, GetActiveExamUseCase
+
+  - Endpoints:
+    GET/POST /api/exams
+    GET/PUT/DELETE /api/exams/{id}
+    POST /api/exams/{id}/activate
+    POST /api/exams/{id}/close
+
+ITEM 3.2 — ExamGroup asociado a Exam
+--------------------------------------
+  - ExamGroup.examId en dominio y en @Entity JPA
+  - Todos los endpoints de grupos se anidan: /api/exams/{examId}/groups/...
+  - Backward compatibility: /api/groups sin examId usa el examen activo
+
+ITEM 3.3 — Migración datos singleton → Exam
+---------------------------------------------
+  - Si existe ExamConfig (id=1): crear Exam "Examen Importado" con esos datos
+  - Asignar todos los ExamGroup existentes a ese Exam
+  - Implementar como parte de DataMigrationService (mismo de Fase 2)
+
+================================================================================
+FASE 4 — MICROSERVICIO: pdf-service
+Estimación: 2-3 sesiones | Primer microservicio extraído
+================================================================================
+
+CONTEXTO
+--------
+  La generación de PDF es stateless, resource-intensive y no necesita acceso
+  a la base de datos del core. Es el candidato ideal para el primer microservicio.
+
+ITEM 4.1 — Crear módulo pdf-service
+--------------------------------------
+  Estructura:
+  pdf-service/
+  ├── src/main/java/com/exammanager/pdf/
+  │   ├── domain/
+  │   │   └── model/PdfRequest.java      ← datos para generar el PDF
+  │   ├── application/
+  │   │   └── GeneratePdfUseCase.java
+  │   └── infrastructure/
+  │       ├── adapter/in/rest/
+  │       │   └── PdfController.java     ← POST /api/pdf/group
+  │       └── adapter/out/openpdf/
+  │           └── OpenPdfGenerator.java  ← implementación con OpenPDF
+  application.properties: server.port=8081
+
+ITEM 4.2 — PdfRequest (contrato entre servicios)
+--------------------------------------------------
+  record PdfRequest(
+    String groupName,
+    List<MemberDto> members,
+    List<String> topics,
+    List<QuestionDto> questions,    ← null si no usa banco de preguntas
+    InstitutionDto institution,
+    ExamDto exam
+  )
+
+  Serializado como JSON en la llamada REST entre exam-core y pdf-service.
+
+ITEM 4.3 — Adaptador en exam-core: RestPdfGeneratorAdapter
+------------------------------------------------------------
+  infrastructure/adapter/out/pdf/RestPdfGeneratorAdapter.java
+  - Implementa GeneratePdfPort
+  - Llama a POST http://pdf-service:8081/api/pdf/group con el PdfRequest
+  - Retorna byte[]
+
+  application.properties:
+    services.pdf.url=http://localhost:8081   ← configurable por entorno
+
+ITEM 4.4 — Docker Compose para desarrollo local
+-------------------------------------------------
+  docker-compose.yml en raíz del proyecto:
+  services:
+    exam-core:
+      build: ./exam-core
+      ports: ["8080:8080"]
+      environment:
+        - SERVICES_PDF_URL=http://pdf-service:8081
+    pdf-service:
+      build: ./pdf-service
+      ports: ["8081:8081"]
+
+================================================================================
+FASE 5 — REGISTRO DE NOTAS Y MÉTRICAS (en exam-core)
+Estimación: 3-4 sesiones | Cierre del ciclo áulico
+================================================================================
+
+ITEM 5.1 — Dominio Grade
+--------------------------
+  - domain/model/Grade.java
+    Campos: id, studentId, examId, examGroupId, groupGrade, individualGrade,
+            finalGrade, status (StudentStatus enum), observations, gradedAt
+  - StudentStatus enum: PROMOTED, APPROVED, AT_RISK, FAILED, ABSENT
+
+  - GradingDomainService:
+    - calcularFinalGrade(groupGrade, individualGrade, groupWeight, individualWeight)
+    - asignarStatus(finalGrade, passingGrade, promotionGrade, riskThreshold)
+
+  - Use cases:
+    RegisterGradeUseCase, BulkRegisterGradesUseCase, ExportGradesCsvUseCase
+
+  - Endpoints:
+    PUT  /api/exams/{examId}/students/{studentId}/grade
+    POST /api/exams/{examId}/grades/bulk
+    GET  /api/exams/{examId}/grades
+    GET  /api/exams/{examId}/grades/export      ← CSV
+
+ITEM 5.2 — Pesos configurables por examen
+-------------------------------------------
+  - Exam.groupWeight (default 0.30) + Exam.individualWeight (default 0.70)
+  - Validar en use case: groupWeight + individualWeight == 1.0
+  - PDF muestra pesos reales (no 30%/70% hardcodeados)
+
+ITEM 5.3 — Umbral de riesgo configurable
+------------------------------------------
+  - Exam.riskThreshold (default 4.0)
+  - AT_RISK: nota >= riskThreshold && nota < passingGrade
+  - FAILED:  nota < riskThreshold
+
+ITEM 5.4 — Historial por alumno
+---------------------------------
+  - Endpoint: GET /api/students/{studentId}/history
+  - Retorna todos los exámenes con notas, status y tendencia (IMPROVING/DECLINING/STABLE)
+  - Tendencia: comparar últimas 3 notas con promedio simple
+
+================================================================================
+FASE 6 — MICROSERVICIO: analytics-service (event-driven)
+Estimación: 3-4 sesiones
+================================================================================
+
+CONTEXTO
+--------
+  Las métricas son read-heavy y no necesitan transacciones con el core.
+  Se alimentan de eventos de dominio (GradeRegistered, ExamClosed) y
+  calculan sus propias proyecciones. Si el servicio cae, se puede
+  reconstruir desde los eventos almacenados.
+
+ITEM 6.1 — Eventos de dominio en exam-core
+--------------------------------------------
+  domain/event/:
+  - GradeRegisteredEvent(examId, studentId, finalGrade, status, timestamp)
+  - ExamClosedEvent(examId, timestamp)
+  - GroupGeneratedEvent(examId, groupCount, studentCount, timestamp)
+
+  PublishDomainEventPort (interfaz de salida) → implementado con:
+    a) Spring Events (in-process, suficiente si no hay bus externo)
+    b) Kafka/RabbitMQ (si se quiere bus real entre servicios)
+
+  Para empezar: usar Spring ApplicationEvents (in-process). Migrar a Kafka
+  cuando haya necesidad real de desacoplamiento físico.
+
+ITEM 6.2 — Crear módulo analytics-service
+-------------------------------------------
+  Estructura hexagonal:
+  analytics-service/
+  ├── domain/
+  │   ├── model/
+  │   │   ├── ExamSnapshot.java         ← proyección calculada de un examen
+  │   │   ├── StudentProfile.java       ← historial agregado del alumno
+  │   │   └── SubjectReport.java        ← reporte por materia
+  │   └── service/
+  │       └── MetricsCalculationService.java
+  ├── application/
+  │   └── usecase/
+  │       ├── ComputeExamMetricsUseCase.java
+  │       └── ComputeImprovementPotentialUseCase.java
+  └── infrastructure/
+      ├── adapter/in/
+      │   ├── event/GradeRegisteredListener.java  ← consume eventos del core
+      │   └── rest/MetricsController.java
+      └── adapter/out/
+          └── jpa/AnalyticsRepository.java        ← BD propia (H2/Postgres)
+
+  El analytics-service tiene su propia base de datos. No comparte BD con exam-core.
+
+ITEM 6.3 — Endpoints de métricas
+----------------------------------
+  GET /api/metrics/exams/{examId}
+  → {
+      totalStudents, graded, absent,
+      promoted: { count, percentage, students[] },
+      approved:  { count, percentage, students[] },
+      atRisk:    { count, percentage, students[] },
+      failed:    { count, percentage, students[] },
+      averageGrade, highestGrade, lowestGrade,
+      gradeDistribution: [ { range, count } ... ],
+      topicDifficulty:   [ { topicName, avgGrade } ... ]
+    }
+
+  GET /api/metrics/students/{studentId}/history
+  → { exams[], summary: { trend, avgGrade, totalExams } }
+
+  GET /api/metrics/subjects?name=Cálculo I
+  → { overallApprovalRate, examEvolution[] }
+
+  GET /api/metrics/exams/{examId}/at-risk
+  → lista de alumnos AT_RISK para intervención temprana
+
+  GET /api/metrics/exams/{examId}/improvement-potential
+  → {
+      topicsToReinforce: [ { topic, impactScore, studentsImpacted } ],
+      estimatedPassRateIncrease
+    }
+
+================================================================================
+FASE 7 — MICROSERVICIO: question-bank-service
+Estimación: 4-5 sesiones
+================================================================================
+
+CONTEXTO
+--------
+  El banco de preguntas es un dominio independiente que puede ser compartido
+  entre múltiples instancias de exam-core (por ejemplo, un banco centralizado
+  por institución). Se expone como API REST y exam-core lo consume a través
+  de un adaptador de salida (LoadQuestionsPort).
+
+ITEM 7.1 — Modelo de dominio
+------------------------------
+  domain/model/:
+  - Question(id, text, explanation, topicId, topicName, difficulty, type, points, active)
+  - QuestionOption(id, questionId, text, isCorrect, explanation)
+  - QuestionDifficulty enum: EASY, MEDIUM, HARD
+  - QuestionType enum: OPEN, MULTIPLE_CHOICE, TRUE_FALSE
+  - ExamTemplate(id, name, institutionId, totalPoints, rules[])
+  - ExamTemplateRule(topicId, easyCount, mediumCount, hardCount, type)
+
+ITEM 7.2 — CRUD banco de preguntas
+------------------------------------
+  Endpoints:
+  GET    /api/questions?topicId=&difficulty=&type=&page=&size=
+  POST   /api/questions
+  PUT    /api/questions/{id}
+  DELETE /api/questions/{id}          ← soft delete (active=false)
+  POST   /api/questions/import        ← import JSON/CSV masivo
+  GET    /api/questions/export        ← export JSON completo del banco
+
+ITEM 7.3 — ExamTemplate y generación aleatoria
+------------------------------------------------
+  GET/POST/PUT/DELETE /api/templates
+  POST /api/templates/{id}/generate?examGroupId={id}
+  → retorna lista de Question seleccionadas según las reglas del template
+
+  Lógica de selección:
+  - Para cada ExamTemplateRule: SELECT preguntas WHERE topic=X AND difficulty=Y
+    ORDER BY RANDOM() LIMIT N
+  - Si allowRepetition=false: excluir IDs ya usados en el mismo examen
+  - Si no hay suficientes preguntas: BusinessException con mensaje descriptivo
+
+ITEM 7.4 — Adaptador en exam-core
+-----------------------------------
+  infrastructure/adapter/out/questionbank/RestQuestionBankAdapter.java
+  - Implementa LoadQuestionsPort
+  - Llama a question-bank-service vía REST
+  - Cachea respuestas con Spring Cache + TTL corto
+
+ITEM 7.5 — PDF con preguntas (delegar a pdf-service)
+-----------------------------------------------------
+  - PdfRequest incluye List<QuestionDto> questions
+  - pdf-service genera secciones por tema con preguntas numeradas
+  - Para MULTIPLE_CHOICE: opciones a), b), c), d) con checkboxes
+  - Para OPEN: espacio en blanco proporcional a la extensión esperada
+
+================================================================================
+FASE 8 — MICROSERVICIO: ai-correction-service
+Estimación: 4-6 sesiones | Requiere modelo de IA configurado
+================================================================================
+
+CONTEXTO
+--------
+  La corrección con IA llama a APIs externas costosas (OpenAI) o modelos
+  locales (Ollama). Necesita su propio rate-limiting, fallback, y SLA
+  completamente distinto al core. Es el candidato más claro para microservicio.
+
+ITEM 8.1 — Setup Spring AI
+-----------------------------
+  Dependencias:
+  - spring-ai-bom (BOM)
+  - spring-ai-openai-spring-boot-starter   ← para producción (gpt-4o-mini)
+  - spring-ai-ollama-spring-boot-starter   ← para desarrollo local gratuito
+
+  Configuración:
+  application-dev.properties:
+    spring.ai.ollama.base-url=http://localhost:11434
+    spring.ai.ollama.chat.model=llama3.2
+
+  application-prod.properties:
+    spring.ai.openai.api-key=${OPENAI_API_KEY}
+    spring.ai.openai.chat.model=gpt-4o-mini
+
+ITEM 8.2 — Modelo de dominio
+------------------------------
+  domain/model/:
+  - CorrectionRequest(questionText, expectedAnswer, studentAnswer, maxPoints)
+  - CorrectionResult(suggestedScore, reasoning, commonMistake, confidence)
+  - StudentAnswer(id, studentGradeId, questionId, answerText, answerImagePath, reviewed)
+  - AiCorrection(id, studentAnswerId, suggestedScore, reasoning, commonMistake,
+                  confidence, acceptedByTeacher, generatedAt)
+  - InstructionalInsight(examId, topicName, errorPattern, recommendation,
+                          affectedStudents, affectedPercentage)
+
+ITEM 8.3 — Servicio de corrección
+-----------------------------------
+  Prompt para corrección de respuesta abierta:
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Sos un asistente académico. Evaluá la respuesta del alumno.   │
+  │                                                                  │
+  │  PREGUNTA: {questionText}                                       │
+  │  RESPUESTA ESPERADA: {expectedAnswer}                           │
+  │  RESPUESTA DEL ALUMNO: {studentAnswer}                          │
+  │  PUNTAJE MÁXIMO: {maxPoints}                                    │
+  │                                                                  │
+  │  Devolvé SOLO un JSON:                                          │
+  │  {                                                               │
+  │    "suggestedScore": <0 a maxPoints>,                           │
+  │    "reasoning": "<explicación breve>",                          │
+  │    "commonMistake": "<patrón de error o null>",                 │
+  │    "confidence": <0.0 a 1.0>                                    │
+  │  }                                                               │
+  └─────────────────────────────────────────────────────────────────┘
+
+  Fallback: si la IA no responde en N segundos, guardar la respuesta como
+  pendiente de revisión manual (reviewed=false, suggestedScore=null).
+
+ITEM 8.4 — Análisis de patrones de error
+------------------------------------------
+  Prompt para análisis de patrones en un examen:
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Tenés los siguientes errores comunes en el tema "{topicName}": │
+  │  {lista de commonMistake strings}                               │
+  │                                                                  │
+  │  Respondé SOLO un JSON:                                         │
+  │  {                                                               │
+  │    "errorPattern": "<descripción del patrón general>",          │
+  │    "recommendation": "<qué debería reforzar el docente>",       │
+  │    "affectedPercentage": <0 a 100>                              │
+  │  }                                                               │
+  └─────────────────────────────────────────────────────────────────┘
+
+ITEM 8.5 — Endpoints
+----------------------
+  POST /api/answers/{studentAnswerId}/correct-ai    ← corregir con IA
+  PUT  /api/answers/{studentAnswerId}/accept-ai     ← docente acepta
+  PUT  /api/answers/{studentAnswerId}/override      ← docente sobreescribe
+  GET  /api/exams/{examId}/common-mistakes          ← informe de errores
+  GET  /api/exams/{examId}/ai-summary               ← cuántos usaron IA, confianza promedio
+
+ITEM 8.6 — Métrica: potencial de mejora
+-----------------------------------------
+  Cruzar métricas (analytics-service) con patrones de error (ai-correction-service)
+  para identificar en qué tema intervenir para maximizar la tasa de aprobación.
+
+  GET /api/exams/{examId}/improvement-potential
+  → {
+      topicsToReinforce: [
+        { topicName, impactScore, studentsImpacted, errorPattern, recommendation }
+      ],
+      estimatedPassRateIncrease
+    }
+
+================================================================================
+FASE 9 — SEGURIDAD Y PRODUCCIÓN
+Estimación: 2-3 sesiones
+================================================================================
+
+ITEM 9.1 — Autenticación JWT en exam-core
+-------------------------------------------
+  Roles: ADMIN (docente), VIEWER (solo lectura), STUDENT (solo descarga PDF propio)
+  Endpoints públicos: GET /api/pdf/{groupId} con token de examen
+  Endpoints ADMIN: todos los POST/PUT/DELETE
+
+ITEM 9.2 — API Gateway (Spring Cloud Gateway)
+-----------------------------------------------
+  - Único punto de entrada para el frontend
+  - Rutas:
+    /api/exams/**         → exam-core:8080
+    /api/pdf/**           → pdf-service:8081
+    /api/questions/**     → question-bank-service:8082
+    /api/ai/**            → ai-correction-service:8083
+    /api/metrics/**       → analytics-service:8084
+  - Autenticación centralizada (valida JWT antes de enrutar)
+  - Rate limiting global
+
+ITEM 9.3 — Migracion a PostgreSQL
+-----------------------------------
+  - Usar Flyway para migraciones de esquema en exam-core
+  - Cada microservicio tiene su propio schema/BD
+  - Mantener H2 solo para perfil test
+
+ITEM 9.4 — Docker Compose completo
+-------------------------------------
+  services:
+    postgres:       imagen oficial, volumen persistente
+    exam-core:      puerto 8080
+    pdf-service:    puerto 8081
+    question-bank:  puerto 8082
+    ai-correction:  puerto 8083
+    analytics:      puerto 8084
+    gateway:        puerto 80 (único expuesto al exterior)
+
+================================================================================
+SECCIÓN C — HOJA DE RUTA RESUMIDA
+================================================================================
+
+  FASE   NOMBRE                          SESIONES   NOTAS
+  -----  ------------------------------  ---------  ---------------------------------
+  1      Hexagonal en exam-core          3-4        Prerequisito. No agrega features.
+  2      Multi-institución               2-3        Sobre arquitectura nueva
+  3      Múltiples exámenes              2-3        Cambio de singleton a colección
+  4      Microservicio pdf-service       2-3        Primer servicio extraído
+  5      Notas y métricas en exam-core   3-4        Cierre del ciclo áulico
+  6      Microservicio analytics         3-4        Event-driven, lectura pura
+  7      Microservicio question-bank     4-5        Dominio independiente
+  8      Microservicio ai-correction     4-6        Spring AI, más complejo
+  9      Seguridad y producción          2-3        Antes de deploy
+
+  Total estimado: 25-35 sesiones
+
+================================================================================
+ORDEN DE SESIONES RECOMENDADO
+================================================================================
+
+  SESIONES 1-2:  Fase 1.1-1.3 → multi-módulo Maven + modelos de dominio puros
+  SESIONES 3-4:  Fase 1.4-1.7 → puertos, adaptadores JPA, migrar services actuales
+  SESIONES 5-6:  Fase 2       → Institution + desacople PDF de UADE
+  SESIONES 7-8:  Fase 3       → Múltiples exámenes + migración datos
+  SESIONES 9-10: Fase 4       → pdf-service como microservicio + Docker Compose
+  SESIONES 11-13: Fase 5      → Notas, status, historial, export CSV
+  SESIONES 14-16: Fase 6      → analytics-service event-driven
+  SESIONES 17-20: Fase 7      → question-bank-service + generación aleatoria
+  SESIONES 21-25: Fase 8      → ai-correction-service + Spring AI
+  SESIONES 26-28: Fase 9      → JWT, Gateway, PostgreSQL, Docker prod
+
+================================================================================
+NOTAS FINALES
+================================================================================
+
+  CUANDO NO HACER MICROSERVICIOS
+  - No extraer un servicio solo porque "puede" ser independiente. Hacerlo cuando:
+    a) Necesita escalar de forma diferente al core
+    b) Tiene un dominio verdaderamente independiente
+    c) Puede ser desplegado y versionado por separado
+  - exam-core (students, groups, exams, grades) quedan juntos porque comparten
+    transacciones y están fuertemente acoplados en el dominio.
+
+  TESTING POR FASE
+  - Fase 1: tests de dominio (sin Spring, sin BD) para GroupingDomainService
+  - Fase 5: tests unitarios para GradingDomainService (cálculos matemáticos)
+  - Fase 6: tests de integración para los listeners de eventos
+  - Fase 8: tests con mock de Spring AI (no llamar a OpenAI en tests)
+
+  SPRING AI — RECOMENDACIÓN DE MODELO
+  - Desarrollo: Ollama local con llama3.2 (gratis, privado)
+  - Producción: gpt-4o-mini (relación precio/calidad ideal para prompts cortos)
+  - Los prompts de corrección son cortos y estructurados, costo por examen es bajo
+
+================================================================================
+FIN DEL PLAN  (versión 3.0 — hexagonal + microservicios selectivos)
+================================================================================
