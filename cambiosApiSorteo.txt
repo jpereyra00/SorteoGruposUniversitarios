@@ -1,0 +1,13 @@
+dashboard index: agregar datos de configuración inicial, agregar cursos y materias (configuración inicial del curso), instructivos de uso por seccion
+Estudiantes: ver notas, ver asistencia por nota. cuando se muestren los estudiantes ver el estado gral del mismo , basándote en la nota obtenida: atención (0-4) (5-6) estudiante regular (7) posibilidad promoción (8-10) excelente
+pestaña examen: tener tipos de examenes: Trabajo practico, Examen (agregar numero) , Recuperatorio, tipo final: adelantado, regular, previo) el examen tiene fecha y en base a eso los alumnos tienen asistencia, (presente o ausente a dicho examen).
+Grupos: posibilidad de agregar o modificar el estudiante en un grupo ya generado, después de haber generado los grupos se puede agregar otro estudiante si este no esta en ningún grupo previo, si un estudiante es cargado después de generar los grupos (estudiante sin grupo), el mismo puede ser adicionado al menor grupo disponible (sugerir) o generar otro grupo si es que son varios que están sin grupos. descargar en formato Word o pdf 
+temas : permitir agregar los temas por unidades (coleccion de temas), y sortear unidades  completas o con temas aislados. permitir agregar un tema basándose en una imagen.  para por ejemplo encontrar el error (si es que es un fragmento de codigo o una imagen que debe resolver visual), permitir agregar un archivo CSV o copiar y pegar en un campo. (poner un placeholder de como deberia cargarse en cada caso) o boton de ayuda.
+tener un banco de preguntas, agregar preguntas de completar, v o f, con opciones,etc. las preguntas tienen un tema, unidad,e dificultad (esto influye a la hora de generar los examenes). 
+pdfs: (ahora la pestaña se llama "imprimible" (generar todos) es (generar un zip) tener la posibilidad de elegir que descargar queremos descargar (1° parcial, final, recuperatorio). elegir el formato (pdf o word)
+general: agregar la posibilidad de tener diferentes tipos de exámenes( no necesariamente respetar los mismos grupos, se pueden generar de nuevo o bien se puede rendir individual.  generar el informe del estudiante
+configurar: nuclear todas las configuraciones, en la cabecera donde va nombre y apellido (debemos cargar un cuadro con 2 columnas, 1° Nombre Completo, 2° legajo) en nota tener la nota de o del grupo del estudiante, en ese caso tendremos entonces toda un solo cuadro con 3 columnas. 
+
+cada asignatura es pre cargada y basándote en eso, los exámenes , trabajos, finales , y todos los contenidos son diferentes. 
+la asignatura se carga, por año, cuatrimestre (1° o 2°), universidad. De esa manera se genera un historial de materias y estudiantes.  
+Posibilidad de generar un backup si el sistema falla. 
