@@ -6,13 +6,24 @@
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
-        <module name="uade-exam-manager" />
+        <module name="analytics-service" />
+        <module name="question-bank-service" />
+        <module name="ai-correction-service" />
+        <module name="academic-integrity-service" />
+        <module name="document-service" />
+        <module name="exam-core" />
       </profile>
     </annotationProcessing>
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
-      <module name="uade-exam-manager" options="-parameters" />
+      <module name="academic-integrity-service" options="-parameters" />
+      <module name="ai-correction-service" options="-parameters" />
+      <module name="analytics-service" options="-parameters" />
+      <module name="document-service" options="-parameters" />
+      <module name="exam-core" options="-parameters" />
+      <module name="question-bank-service" options="-parameters" />
+      <module name="uade-exam-manager" options="" />
     </option>
   </component>
 </project>

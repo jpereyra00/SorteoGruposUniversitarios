@@ -18,6 +18,39 @@ Transformar la API en una plataforma educativa genérica con:
 - Servicios con responsabilidades claras, algunos independizables como microservicios
 
 ================================================================================
+BITÁCORA DE AVANCE
+================================================================================
+[2026-06-27] SPRINT 1 — COMPLETADO
+  - Proyecto Maven multi-módulo (parent pom + 6 módulos).
+  - domain/model/ con POJOs puros (Student, Exam, ExamGroup, Unit, Topic,
+    Attendance, Grade + enums). Tests de modelos.
+
+[2026-06-27] SPRINT 2 — COMPLETADO
+  - exam-core refactorizado a arquitectura hexagonal completa:
+      * domain/port/in  : StudentUseCase, GroupUseCase, TopicUseCase,
+                          ExamConfigUseCase, GenerateExamDocumentUseCase
+      * domain/port/out : StudentRepositoryPort, TopicRepositoryPort,
+                          ExamGroupRepositoryPort, ExamConfigRepositoryPort,
+                          HeaderImageStoragePort, DocumentGeneratorPort
+      * domain/service  : GroupingDomainService, TopicAssignmentDomainService,
+                          GradingDomainService (puros, sin Spring/JPA)
+      * application/usecase : 5 *ApplicationService (@Transactional) +
+                              application/view (read-models)
+      * infrastructure/adapter/in/rest  : 6 controllers llaman use cases
+      * infrastructure/adapter/out/{persistence,document,storage} + mappers
+  - Eliminados los @Service / *ServiceImpl y los controllers viejos.
+  - 41 tests OK (19 nuevos de dominio). Smoke test: todos los endpoints
+    responden con el mismo JSON que antes; PDF se genera correctamente.
+  - DESVÍOS RESPECTO DEL PLAN (deliberados):
+      * Puertos cohesivos por agregado en lugar de la lista granular
+        (no se crearon CreateStudentUseCase, LoadStudentPort/SaveStudentPort, etc.).
+      * Las @Entity y los JpaRepository siguen en entity/ y repository/,
+        envueltos por los adaptadores de persistencia con mappers.
+      * El singleton ExamConfig se mapea al modelo de dominio Exam reutilizado.
+
+  PRÓXIMO: SPRINT 3 — Multi-institución + CourseEdition (Fase 2).
+
+================================================================================
 SECCIÓN A — DECISIONES DE ARQUITECTURA
 ================================================================================
 
@@ -957,9 +990,9 @@ ITEM 10.5 — Docker Compose completo
 SECCIÓN C — HOJA DE RUTA RESUMIDA
 ================================================================================
 
-  FASE   NOMBRE                              SESIONES   SPRINT(S)
-  -----  ----------------------------------  ---------  -----------
-  1      Hexagonal en exam-core              3-4        1 - 2
+  FASE   NOMBRE                              SESIONES   SPRINT(S)   ESTADO
+  -----  ----------------------------------  ---------  ----------- ----------
+  1      Hexagonal en exam-core              3-4        1 - 2       COMPLETADO
   2      Multi-institución + CourseEdition   2-3        3
   3      Múltiples exámenes + Asistencia     2-3        4
   4      document-service (PDF + Word)       2-3        5

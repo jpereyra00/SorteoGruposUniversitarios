@@ -56,18 +56,29 @@ Abrir en navegador:
 - User: `sa`
 - Password: *(vacío)*
 
-## Estructura
+## Estructura (arquitectura hexagonal)
 
-- `controller/`: controladores MVC
-- `service/`: reglas de negocio
-- `repository/`: acceso a datos JPA
-- `entity/`: entidades de dominio
-- `templates/`: vistas Thymeleaf
-- `static/`: CSS/JS/imagenes
+`exam-core` está organizado en capas siguiendo el patrón ports & adapters:
+
+- `domain/model/`: modelos de negocio puros (POJOs, sin Spring ni JPA)
+- `domain/port/in/`: puertos de entrada (use cases)
+- `domain/port/out/`: puertos de salida (repositorios, generador de documentos, storage)
+- `domain/service/`: lógica de negocio pura (`GroupingDomainService`, `TopicAssignmentDomainService`, `GradingDomainService`)
+- `application/usecase/`: implementaciones de los use cases (`*ApplicationService`), orquestan los puertos
+- `application/view/`: read-models devueltos a los adaptadores de entrada
+- `infrastructure/adapter/in/rest/`: controladores REST
+- `infrastructure/adapter/out/persistence/`: adaptadores JPA + mappers entidad ↔ dominio
+- `infrastructure/adapter/out/document/`: generación de PDF con OpenPDF
+- `infrastructure/adapter/out/storage/`: almacenamiento de imagen de cabecera
+- `infrastructure/config/`: registro de beans (servicios de dominio)
+- `entity/` + `repository/`: entidades `@Entity` y `JpaRepository` (detalle de persistencia, envuelto por los adaptadores)
+- `static/`: CSS/JS/imágenes
 
 ## Notas de diseño
 
-- Arquitectura monolítica MVC con separación por capas para respetar SOLID.
-- Validaciones en backend y restricciones en frontend.
+- Arquitectura hexagonal (ports & adapters): el dominio es puro y no depende de Spring, JPA ni HTTP.
+- Los controladores invocan use cases (puertos de entrada), nunca servicios de infraestructura directamente.
+- Validaciones de negocio en los servicios de dominio y use cases; restricciones también en frontend.
 - Manejo centralizado de errores con `@ControllerAdvice`.
 - Base H2 persistente por archivo para conservar datos entre reinicios.
+- Tests de dominio puros (sin Spring ni BD) para `GroupingDomainService` y `GradingDomainService`.
